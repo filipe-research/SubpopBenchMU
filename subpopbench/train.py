@@ -192,7 +192,7 @@ if __name__ == "__main__":
         assert os.path.isfile(args.pretrained)
 
     if args.pretrained:
-        checkpoint = torch.load(args.pretrained, map_location="cpu")
+        checkpoint = torch.load(args.pretrained, map_location="cpu", weights_only=False)
         from collections import OrderedDict
         new_state_dict = OrderedDict()
         for k, v in checkpoint['model_dict'].items():
@@ -205,7 +205,7 @@ if __name__ == "__main__":
     if args.resume:
         if os.path.isfile(args.resume):
             print(f"===> Loading checkpoint '{args.resume}'")
-            checkpoint = torch.load(args.resume)
+            checkpoint = torch.load(args.resume, weights_only=False)
             start_step = checkpoint['start_step']
             args.best_val_acc = checkpoint['best_val_acc']
             algorithm.load_state_dict(checkpoint['model_dict'])
@@ -318,7 +318,7 @@ if __name__ == "__main__":
 
     # load best model and get metrics on eval sets
     if args.use_es and not args.skip_model_save:
-        algorithm.load_state_dict(torch.load(os.path.join(args.output_dir, "model.best.pkl"))['model_dict'])
+        algorithm.load_state_dict(torch.load(os.path.join(args.output_dir, "model.best.pkl"), weights_only=False)['model_dict'])
 
     algorithm.eval()
 

@@ -116,7 +116,7 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # --- 1. Load checkpoint ---
-    checkpoint = torch.load(args.model_path, map_location='cpu')
+    checkpoint = torch.load(args.model_path, map_location='cpu', weights_only=False)
     hparams = checkpoint['model_hparams']
     input_shape = checkpoint['model_input_shape']
     num_labels = checkpoint['num_labels']
