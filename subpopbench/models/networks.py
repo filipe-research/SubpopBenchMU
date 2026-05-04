@@ -261,7 +261,12 @@ def Featurizer(data_type, input_shape, hparams):
         elif input_shape[1:3] == (32, 32):
             return wide_resnet.WideResNet(input_shape, 16, 2, 0.)
         elif input_shape[1:3] == (224, 224):
-            if hparams['image_arch'] == 'resnet_sup_in1k':
+            if hparams['image_arch'] == 'resnet18_sup_in1k':
+                network = torchvision.models.resnet18(weights='IMAGENET1K_V1')
+                n_outputs = network.fc.in_features
+                network.fc = Identity()
+                return ImportedModel(network, n_outputs, input_shape, hparams, hparams['pretrained'])
+            elif hparams['image_arch'] == 'resnet_sup_in1k':
                 return ResNet(input_shape, hparams, hparams['pretrained'])
             elif hparams['image_arch'] in ['vit_sup_in1k', 'vit_sup_in21k', 'vit_clip_oai',
                                            'vit_clip_laion', 'resnet_sup_in21k', 'vit_dino_in1k']:

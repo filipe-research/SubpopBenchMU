@@ -56,7 +56,8 @@ if __name__ == "__main__":
     parser.add_argument('--cmnist_flip_prob', type=float, default=0.25)
     # architectures and pre-training sources
     parser.add_argument('--image_arch', default='resnet_sup_in1k',
-                        choices=['resnet_sup_in1k', 'resnet_sup_in21k', 'resnet_simclr_in1k', 'resnet_barlow_in1k',
+                        choices=['resnet_sup_in1k', 'resnet18_sup_in1k', 'resnet_sup_in21k',
+                                 'resnet_simclr_in1k', 'resnet_barlow_in1k',
                                  'vit_sup_in1k', 'vit_sup_in21k', 'vit_clip_oai', 'vit_clip_laion', 'vit_sup_swag',
                                  'vit_dino_in1k', 'resnet_dino_in1k'])
     parser.add_argument('--text_arch', default='bert-base-uncased',
