@@ -124,28 +124,34 @@ def prob_metrics(targets, preds, label_set, return_arrays=False):
     if len(targets) == 0:
         return {}
 
+    n_classes_present = len(set(targets))
+
     res = {
-        'AUROC_ovo': roc_auc_score(targets, preds, multi_class='ovo', labels=label_set),
         'BCE': log_loss(targets, preds, eps=1e-6, labels=label_set),
         'ECE': netcal.metrics.ECE().measure(preds, targets)
     }
 
-    # happens when you predict a class, but there are no samples with that class in the dataset
-    try:
-        res['AUROC'] = roc_auc_score(targets, preds, multi_class='ovr', labels=label_set)
-    except:
-        res['AUROC'] = roc_auc_score(targets, preds, multi_class='ovo', labels=label_set)
+    # AUROC/AUPRC/brier require at least 2 classes in y_true
+    if n_classes_present >= 2:
+        if len(label_set) > 1:
+            res['AUROC_ovo'] = roc_auc_score(targets, preds, multi_class='ovo', labels=label_set)
 
-    if len(set(targets)) == 2:
-        if preds.ndim == 2:
-            # Multi-class model evaluated on a binary subgroup:
-            # extract probability of the positive (higher) class
-            pos_class = max(set(targets))
-            preds_bin = preds[:, int(pos_class)]
-        else:
-            preds_bin = preds
-        res['AUPRC'] = average_precision_score(targets, preds_bin)
-        res['brier'] = brier_score_loss(targets, preds_bin)
+        # happens when you predict a class, but there are no samples with that class in the dataset
+        try:
+            res['AUROC'] = roc_auc_score(targets, preds, multi_class='ovr', labels=label_set)
+        except:
+            res['AUROC'] = roc_auc_score(targets, preds, multi_class='ovo', labels=label_set)
+
+        if n_classes_present == 2:
+            if preds.ndim == 2:
+                # Multi-class model evaluated on a binary subgroup:
+                # extract probability of the positive (higher) class
+                pos_class = max(set(targets))
+                preds_bin = preds[:, int(pos_class)]
+            else:
+                preds_bin = preds
+            res['AUPRC'] = average_precision_score(targets, preds_bin)
+            res['brier'] = brier_score_loss(targets, preds_bin)
 
     if return_arrays:
         res['targets'] = targets
