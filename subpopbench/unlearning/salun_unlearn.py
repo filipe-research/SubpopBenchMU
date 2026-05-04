@@ -201,9 +201,9 @@ def main():
     train_dataset = vars(datasets)[args.dataset](
         args.data_dir, 'tr', hparams, train_attr=args.train_attr)
     val_dataset = vars(datasets)[args.dataset](
-        args.data_dir, 'va', hparams, train_attr=args.train_attr)
+        args.data_dir, 'va', hparams)
     test_dataset = vars(datasets)[args.dataset](
-        args.data_dir, 'te', hparams, train_attr=args.train_attr)
+        args.data_dir, 'te', hparams)
 
     # --- 4. Reconstruct algorithm + load weights ---
     algorithm = algorithms.get_algorithm_class('ERM')(
