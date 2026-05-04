@@ -12,7 +12,7 @@ def predict_on_set(algorithm, loader, device):
     ys, atts, gs, ps = [], [], [], []
 
     algorithm.eval()
-    with torch.no_grad():e
+    with torch.no_grad():
         for _, x, y, a in loader:
             p = algorithm.predict(x.to(device))
             if p.squeeze().ndim == 1:
