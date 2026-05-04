@@ -127,11 +127,13 @@ def prob_metrics(targets, preds, label_set, return_arrays=False):
     n_classes_present = len(set(targets))
 
     res = {
-        'BCE': log_loss(targets, preds, eps=1e-6, labels=label_set),
         'ECE': netcal.metrics.ECE().measure(preds, targets)
     }
 
-    # AUROC/AUPRC/brier require at least 2 classes in y_true
+    # log_loss/AUROC/AUPRC/brier require at least 2 classes in y_true
+    if n_classes_present >= 2:
+        res['BCE'] = log_loss(targets, preds, eps=1e-6, labels=label_set)
+
     if n_classes_present >= 2:
         if len(label_set) > 1:
             res['AUROC_ovo'] = roc_auc_score(targets, preds, multi_class='ovo', labels=label_set)
