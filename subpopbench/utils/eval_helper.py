@@ -137,8 +137,15 @@ def prob_metrics(targets, preds, label_set, return_arrays=False):
         res['AUROC'] = roc_auc_score(targets, preds, multi_class='ovo', labels=label_set)
 
     if len(set(targets)) == 2:
-        res['AUPRC'] = average_precision_score(targets, preds, average='macro')
-        res['brier'] = brier_score_loss(targets, preds)
+        if preds.ndim == 2:
+            # Multi-class model evaluated on a binary subgroup:
+            # extract probability of the positive (higher) class
+            pos_class = max(set(targets))
+            preds_bin = preds[:, int(pos_class)]
+        else:
+            preds_bin = preds
+        res['AUPRC'] = average_precision_score(targets, preds_bin)
+        res['brier'] = brier_score_loss(targets, preds_bin)
 
     if return_arrays:
         res['targets'] = targets
