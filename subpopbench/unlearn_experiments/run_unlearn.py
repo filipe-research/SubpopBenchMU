@@ -240,6 +240,7 @@ def main():
                         forget_idx, retain_idx, device=device)
 
     # --- 9b. FBC / FBC-band overlap with bias-aligned ground-truth (Waterbirds-only diagnostic) ---
+    # Legacy: random-draw bias_aligned vs selected. Kept for backward compatibility.
     if (args.regime in {'fbc', 'fbc_band'}
             and args.dataset == 'Waterbirds'
             and args.train_attr == 'yes'):
@@ -248,6 +249,23 @@ def main():
         results['fbc_n_selected'] = int(len(forget_idx))
         results['fbc_n_overlap_with_bias_aligned'] = int(overlap_n)
         results['fbc_overlap_ratio'] = float(overlap_n) / len(forget_idx)
+
+    # --- 9c. FBC / FBC-band counts vs full bias-aligned / bias-conflicting pools ---
+    # More informative than 9b: independent of any random ground-truth draw.
+    if args.regime in ('fbc', 'fbc_band') and args.train_attr == 'yes':
+        from subpopbench.unlearn_experiments.forget_regimes import _collect_groups
+        y_all, a_all = _collect_groups(train_dataset)
+        ba_pool = set(np.where(y_all == a_all)[0].tolist())
+        bc_pool = set(np.where(y_all != a_all)[0].tolist())
+
+        selected = set(forget_idx.tolist())
+        n_ba = len(selected & ba_pool)
+        n_bc = len(selected & bc_pool)
+
+        results['fbc_n_selected'] = int(len(selected))
+        results['fbc_n_bias_aligned'] = int(n_ba)
+        results['fbc_n_bias_conflicting'] = int(n_bc)
+        results['fbc_pct_bias_aligned'] = float(n_ba) / len(selected)
 
     # --- 10. Save JSON ---
     out_path = os.path.join(args.output_dir, _output_filename(args))
