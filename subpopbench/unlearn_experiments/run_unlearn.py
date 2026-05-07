@@ -91,8 +91,18 @@ def _build_forget_set(regime, train_dataset, algorithm, args, device):
 def _output_filename(args):
     if args.regime == 'class':
         return f"class{args.target_class}_seed{args.seed}.json"
+
+    suffix = ''
+    if args.regime == 'ts_fbc':
+        suffix = f"_M{args.pool_multiplier}"
+    elif args.regime == 'fbc_band':
+        suffix = f"_b{args.fbc_band_low}-{args.fbc_band_high}"
+    elif args.regime == 'fbc':
+        if not args.fbc_classwise or not args.fbc_filter_correct:
+            suffix = f"_cw{args.fbc_classwise}_fc{args.fbc_filter_correct}"
+
     pct = int(round(args.forget_ratio * 100))
-    return f"{args.regime}_ratio{pct}_seed{args.seed}.json"
+    return f"{args.regime}{suffix}_ratio{pct}_seed{args.seed}.json"
 
 
 def main():
