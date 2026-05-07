@@ -33,6 +33,7 @@ from subpopbench.unlearning.generate_mask import compute_saliency_mask
 from subpopbench.unlearning.neggrad_unlearn import run_neggrad
 from subpopbench.unlearning.salun_unlearn import RandomLabelDataset, run_salun
 from subpopbench.unlearn_experiments.forget_regimes import (
+    awm_fbc_forget,
     bias_aligned_forget,
     bias_conflicting_forget,
     class_forget,
@@ -47,11 +48,11 @@ from subpopbench.unlearn_experiments.metrics import full_eval
 
 REGIME_CHOICES = [
     'random', 'group_uniform', 'bias_aligned', 'bias_conflicting',
-    'class', 'fbc', 'fbc_band', 'ts_fbc',
+    'class', 'fbc', 'fbc_band', 'ts_fbc', 'awm_fbc',
 ]
 
 
-def _build_forget_set(regime, train_dataset, algorithm, args, device):
+def _build_forget_set(regime, train_dataset, algorithm, args, device, weak_model=None):
     """Dispatch to the correct forget-regime function. Returns (forget_idx, retain_idx)."""
     if regime == 'random':
         return random_forget(train_dataset, args.forget_ratio, seed=args.seed)
@@ -84,6 +85,15 @@ def _build_forget_set(regime, train_dataset, algorithm, args, device):
             pool_multiplier=args.pool_multiplier,
             classwise=args.fbc_classwise,
             filter_correct=args.fbc_filter_correct,
+            device=device, seed=args.seed,
+        )
+    if regime == 'awm_fbc':
+        if weak_model is None:
+            raise ValueError("awm_fbc regime requires weak_model to be loaded.")
+        return awm_fbc_forget(
+            train_dataset, weak_model=weak_model, ratio=args.forget_ratio,
+            pool_multiplier=args.pool_multiplier,
+            classwise=args.fbc_classwise,
             device=device, seed=args.seed,
         )
     raise ValueError(f"Unknown regime: {regime}")
@@ -125,6 +135,8 @@ def main():
                         help='Fraction in (0, 1]. Used by all regimes except class.')
     parser.add_argument('--target_class', type=int, default=None,
                         help='Required iff --regime=class.')
+    parser.add_argument('--weak_checkpoint', type=str, default=None,
+                        help='Required iff --regime=awm_fbc. Path to a weak ERM model.pkl.')
     parser.add_argument('--seed', type=int, default=0)
     # data
     parser.add_argument('--data_dir', type=str, default='./data')
@@ -164,6 +176,8 @@ def main():
         parser.error("--target_class is required when --regime=class")
     if args.regime != 'class' and not (0.0 < args.forget_ratio <= 1.0):
         parser.error(f"--forget_ratio must be in (0, 1], got {args.forget_ratio}")
+    if args.regime == 'awm_fbc' and args.weak_checkpoint is None:
+        parser.error("--weak_checkpoint is required when --regime=awm_fbc")
 
     # --- Determinism ---
     random.seed(args.seed)
@@ -213,8 +227,29 @@ def main():
     algorithm.load_state_dict(ckpt['model_dict'])
     algorithm.to(device)
 
+    # --- 3b. (awm_fbc only) Load auxiliary weak ERM ---
+    weak_model = None
+    if args.regime == 'awm_fbc':
+        weak_ckpt = torch.load(args.weak_checkpoint, map_location='cpu', weights_only=False)
+        weak_hparams = weak_ckpt['model_hparams']
+        weak_input_shape = weak_ckpt['model_input_shape']
+        weak_num_labels = weak_ckpt['num_labels']
+        weak_num_attributes = weak_ckpt['num_attributes']
+        if 'image_arch' not in weak_hparams:
+            raise ValueError("image_arch missing in weak_checkpoint hparams.")
+        weak_model = algorithms.get_algorithm_class('ERM')(
+            'images', weak_input_shape, weak_num_labels, weak_num_attributes,
+            len(train_dataset), weak_hparams, grp_sizes=train_dataset.group_sizes,
+        )
+        weak_model.load_state_dict(weak_ckpt['model_dict'])
+        weak_model.to(device)
+        print(f"  Weak ERM:        {args.weak_checkpoint}  "
+              f"(arch={weak_hparams['image_arch']})")
+
     # --- 4. Build forget / retain via the chosen regime ---
-    forget_idx, retain_idx = _build_forget_set(args.regime, train_dataset, algorithm, args, device)
+    forget_idx, retain_idx = _build_forget_set(
+        args.regime, train_dataset, algorithm, args, device, weak_model=weak_model
+    )
     if len(forget_idx) == 0:
         raise ValueError(f"Regime {args.regime} produced an empty forget set.")
     if len(retain_idx) == 0:
@@ -296,7 +331,7 @@ def main():
 
     # --- 9c. FBC / FBC-band counts vs full bias-aligned / bias-conflicting pools ---
     # More informative than 9b: independent of any random ground-truth draw.
-    if args.regime in ('fbc', 'fbc_band', 'ts_fbc') and args.train_attr == 'yes':
+    if args.regime in ('fbc', 'fbc_band', 'ts_fbc', 'awm_fbc') and args.train_attr == 'yes':
         from subpopbench.unlearn_experiments.forget_regimes import _collect_groups
         y_all, a_all = _collect_groups(train_dataset)
         ba_pool = set(np.where(y_all == a_all)[0].tolist())

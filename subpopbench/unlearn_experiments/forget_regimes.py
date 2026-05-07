@@ -258,6 +258,67 @@ def ts_fbc_forget(dataset, model, ratio, pool_multiplier=3.0,
     return forget_idx, retain_idx
 
 
+def awm_fbc_forget(dataset, weak_model, ratio, classwise=True,
+                   pool_multiplier=3.0, device='cuda', seed=0):
+    """Auxiliary Weak Model FBC.
+
+    Uses an auxiliary weak ERM model to identify shortcut-dependent samples.
+    Pool = top-(ratio * pool_multiplier)% by weak_model confidence among
+    samples the weak model classifies correctly. Forget set = random K from pool.
+
+    Same structure as ts_fbc_forget but the confidence is read from `weak_model`
+    rather than the main ERM. filter_correct is hard-coded True (the docstring
+    says 'entre os classificados corretamente').
+    """
+    rng = np.random.default_rng(seed)
+
+    # Stage 1: confidence + correctness from weak_model
+    weak_model.eval()
+    loader = DataLoader(dataset, batch_size=256, num_workers=4, shuffle=False)
+    confs, labels, correct = [], [], []
+    with torch.no_grad():
+        for batch in loader:
+            # SubpopBench: batch is (i, x, y, a)
+            x = batch[1].to(device, non_blocking=True)
+            y = batch[2].to(device, non_blocking=True)
+            logits = weak_model.predict(x)
+            probs = F.softmax(logits, dim=1)
+            c, p = probs.max(dim=1)
+            confs.append(c.cpu())
+            labels.append(y.cpu())
+            correct.append((p == y).cpu())
+    confs = torch.cat(confs).numpy()
+    labels = torch.cat(labels).numpy()
+    correct = torch.cat(correct).numpy()
+
+    n_forget = int(len(dataset) * ratio)
+    n_pool = int(n_forget * pool_multiplier)
+    eligible = correct.astype(bool)
+
+    # Stage 2: top-M pool, then random K
+    if classwise:
+        n_classes = int(labels.max()) + 1
+        per_class_pool = n_pool // n_classes
+        per_class_forget = n_forget // n_classes
+        forget_idx_list = []
+        for c in range(n_classes):
+            mask = eligible & (labels == c)
+            cand = np.where(mask)[0]
+            order = np.argsort(-confs[cand])
+            pool = cand[order[:per_class_pool]]
+            chosen = rng.choice(pool, size=min(per_class_forget, len(pool)), replace=False)
+            forget_idx_list.append(chosen)
+        forget_idx = np.concatenate(forget_idx_list)
+    else:
+        cand = np.where(eligible)[0]
+        order = np.argsort(-confs[cand])
+        pool = cand[order[:n_pool]]
+        forget_idx = rng.choice(pool, size=min(n_forget, len(pool)), replace=False)
+
+    retain_idx = np.setdiff1d(np.arange(len(dataset)), forget_idx)
+    return forget_idx, retain_idx
+
+
 REGIMES = {
     "random": random_forget,
     "group_uniform": group_uniform_forget,
@@ -267,4 +328,5 @@ REGIMES = {
     "fbc": fbc_forget,
     "fbc_band": fbc_band_forget,
     "ts_fbc": ts_fbc_forget,
+    "awm_fbc": awm_fbc_forget,
 }
