@@ -30,6 +30,7 @@ from torch.utils.data import DataLoader, Subset
 from subpopbench.dataset import datasets
 from subpopbench.learning import algorithms
 from subpopbench.unlearning.generate_mask import compute_saliency_mask
+from subpopbench.unlearning.neggrad_unlearn import run_neggrad
 from subpopbench.unlearning.salun_unlearn import RandomLabelDataset, run_salun
 from subpopbench.unlearn_experiments.forget_regimes import (
     bias_aligned_forget,
@@ -89,8 +90,10 @@ def _build_forget_set(regime, train_dataset, algorithm, args, device):
 
 
 def _output_filename(args):
+    method_prefix = f"{args.method}_" if args.method != 'salun' else ""
+
     if args.regime == 'class':
-        return f"class{args.target_class}_seed{args.seed}.json"
+        return f"{method_prefix}class{args.target_class}_seed{args.seed}.json"
 
     suffix = ''
     if args.regime == 'ts_fbc':
@@ -102,7 +105,7 @@ def _output_filename(args):
             suffix = f"_cw{args.fbc_classwise}_fc{args.fbc_filter_correct}"
 
     pct = int(round(args.forget_ratio * 100))
-    return f"{args.regime}{suffix}_ratio{pct}_seed{args.seed}.json"
+    return f"{method_prefix}{args.regime}{suffix}_ratio{pct}_seed{args.seed}.json"
 
 
 def main():
@@ -114,6 +117,9 @@ def main():
                         choices=['Waterbirds', 'CMNIST'])
     parser.add_argument('--erm_checkpoint', type=str, required=True)
     parser.add_argument('--output_dir', type=str, required=True)
+    parser.add_argument('--method', type=str, default='salun',
+                        choices=['salun', 'neggrad'],
+                        help="Unlearning method.")
     parser.add_argument('--regime', type=str, required=True, choices=REGIME_CHOICES)
     parser.add_argument('--forget_ratio', type=float, default=0.1,
                         help='Fraction in (0, 1]. Used by all regimes except class.')
@@ -127,10 +133,14 @@ def main():
     parser.add_argument('--image_arch', type=str, default=None,
                         help='Override image_arch (default: read from checkpoint)')
     # SalUn hparams (defaults match subpopbench.unlearning.salun_unlearn)
-    parser.add_argument('--alpha', type=float, default=0.5)
+    parser.add_argument('--alpha', type=float, default=0.5,
+                        help='SalUn saliency mask threshold (ignored when --method=neggrad).')
     parser.add_argument('--unlearn_lr', type=float, default=0.01)
     parser.add_argument('--unlearn_epochs', type=int, default=10)
     parser.add_argument('--batch_size', type=int, default=108)
+    # NegGrad+ hparams
+    parser.add_argument('--neggrad_lambda', type=float, default=0.5,
+                        help='NegGrad+ ascent weight on the forget term (ignored when --method=salun).')
     # FBC / FBC-band hparams (used when regime in {fbc, fbc_band})
     parser.add_argument('--fbc_classwise', action=argparse.BooleanOptionalAction,
                         default=True, help='Per-class budget split for FBC selection.')
@@ -211,13 +221,14 @@ def main():
         raise ValueError(f"Regime {args.regime} produced an empty retain set.")
 
     # --- 5. Header (regime + sizes printed BEFORE mask, per spec) ---
-    print(f"=== Run Unlearn ({args.dataset}, regime={args.regime}) ===")
+    print(f"=== Run Unlearn ({args.dataset}, method={args.method}, regime={args.regime}) ===")
     print(f"  ERM checkpoint:  {args.erm_checkpoint}")
     print(f"  Arch:            {hparams['image_arch']}")
     print(f"  Device:          {device}")
     print(f"  Seed:            {args.seed}")
     print(f"  Train total:     {len(train_dataset)}")
     print(f"  Test total:      {len(test_dataset)}")
+    print(f"  Method:          {args.method}")
     print(f"  Regime:          {args.regime}")
     if args.regime == 'class':
         print(f"  Target class:    {args.target_class}  (forget_ratio ignored)")
@@ -233,28 +244,40 @@ def main():
             print(f"  WARNING: requested forget size {target}, but only {len(forget_idx)} "
                   f"bias-conflicting samples exist. Using all of them.")
 
-    # --- 6. Saliency mask ---
+    # --- 6. Subsets shared by both methods ---
     forget_subset = Subset(train_dataset, forget_idx.tolist())
-    forget_loader = DataLoader(
-        forget_subset, batch_size=args.batch_size, shuffle=False,
-        num_workers=4, pin_memory=True,
-    )
-    print(f"\n  Computing saliency mask (alpha={args.alpha})...")
-    mask = compute_saliency_mask(algorithm, forget_loader, device, alpha=args.alpha)
-
-    # --- 7. Random-label forget + real-label retain ---
-    forget_random = RandomLabelDataset(forget_subset, num_labels, seed=args.seed)
     retain_subset = Subset(train_dataset, retain_idx.tolist())
 
-    # --- 8. Run SalUn unlearning ---
-    run_salun(
-        algorithm, mask, forget_random, retain_subset,
-        lr=args.unlearn_lr,
-        epochs=args.unlearn_epochs,
-        batch_size=args.batch_size,
-        device=device,
-        verbose=True,
-    )
+    # --- 7. Method-specific unlearning ---
+    if args.method == 'salun':
+        forget_loader = DataLoader(
+            forget_subset, batch_size=args.batch_size, shuffle=False,
+            num_workers=4, pin_memory=True,
+        )
+        print(f"\n  Computing saliency mask (alpha={args.alpha})...")
+        mask = compute_saliency_mask(algorithm, forget_loader, device, alpha=args.alpha)
+        forget_random = RandomLabelDataset(forget_subset, num_labels, seed=args.seed)
+        run_salun(
+            algorithm, mask, forget_random, retain_subset,
+            lr=args.unlearn_lr,
+            epochs=args.unlearn_epochs,
+            batch_size=args.batch_size,
+            device=device,
+            verbose=True,
+        )
+    elif args.method == 'neggrad':
+        print(f"\n  Running NegGrad+ (lambda={args.neggrad_lambda})...")
+        run_neggrad(
+            algorithm, forget_subset, retain_subset,
+            lr=args.unlearn_lr,
+            epochs=args.unlearn_epochs,
+            batch_size=args.batch_size,
+            neggrad_lambda=args.neggrad_lambda,
+            device=device,
+            verbose=True,
+        )
+    else:
+        raise ValueError(f"Unknown method: {args.method}")
 
     # --- 9. CUPID-style evaluation ---
     results = full_eval(algorithm, train_dataset, test_dataset,
