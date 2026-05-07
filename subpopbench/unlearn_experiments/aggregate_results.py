@@ -35,7 +35,21 @@ def main():
         a, r = data['args'], data['results']
         regime = a.get('regime', f"class_{a.get('target_class', '?')}")
         ratio = a.get('forget_ratio')
-        groups[(regime, ratio)].append(r)
+
+        # Sub-chave para diferenciar variantes do mesmo regime
+        sub = ''
+        if regime == 'ts_fbc':
+            sub = f" (M={a.get('pool_multiplier', '?')})"
+        elif regime == 'fbc_band':
+            sub = f" (band={a.get('fbc_band_low', '?')}-{a.get('fbc_band_high', '?')})"
+        elif regime == 'fbc':
+            cw = a.get('fbc_classwise', True)
+            fc = a.get('fbc_filter_correct', True)
+            if not cw or not fc:
+                sub = f" (cw={cw},fc={fc})"
+
+        regime_label = regime + sub
+        groups[(regime_label, ratio)].append(r)
 
     print(f"\n# {len(files)} JSONs, {len(groups)} configurações\n")
 
