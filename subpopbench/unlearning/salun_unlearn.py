@@ -111,6 +111,91 @@ def _eval_all(algorithm, loaders, device):
 
 
 # ---------------------------------------------------------------------------
+# Public unlearning loop
+# ---------------------------------------------------------------------------
+def run_salun(model, mask, forget_set, retain_set, *,
+              lr, epochs, batch_size, device='cuda', verbose=False,
+              on_epoch_end=None):
+    """Apply SalUn unlearning in-place on `model`.
+
+    Concatenates `forget_set` and `retain_set` into a single shuffled
+    DataLoader and runs `epochs` SalUn epochs:
+        forward -> CE -> zero_grad -> backward ->
+        _apply_mask_to_grads -> SGD step -> _restore_masked_params
+
+    The caller is responsible for any per-set transformation (e.g. wrapping
+    `forget_set` with RandomLabelDataset for the RL variant).
+
+    Args:
+        model: SubpopBench algorithm exposing .predict(x) and .named_parameters()
+        mask: dict[name -> 0/1 tensor] from compute_saliency_mask()
+        forget_set, retain_set: torch Datasets returning (i, x, y, a)
+        lr, epochs, batch_size: SGD/loop hyperparameters
+        device: torch device string or object
+        verbose: if True, print per-epoch (epoch_time, avg_loss)
+        on_epoch_end: optional callable(epoch, avg_loss, epoch_time)
+
+    Returns:
+        The same `model` instance, modified in place.
+    """
+    train_loader = torch.utils.data.DataLoader(
+        torch.utils.data.ConcatDataset([forget_set, retain_set]),
+        batch_size=batch_size, shuffle=True,
+        num_workers=4, pin_memory=True,
+    )
+
+    with torch.no_grad():
+        theta0 = {
+            name: param.detach().clone()
+            for name, param in model.named_parameters()
+            if name in mask
+        }
+
+    optimizer = torch.optim.SGD(
+        model.parameters(),
+        lr=lr,
+        momentum=0.9,
+        weight_decay=5e-4,
+    )
+    criterion = nn.CrossEntropyLoss()
+
+    for epoch in range(epochs):
+        epoch_start = time.time()
+        model.train()
+
+        running_loss = 0.0
+        n_batches = 0
+
+        for batch in train_loader:
+            _, x, y, _a = batch
+            x, y = x.to(device), y.to(device, dtype=torch.long)
+
+            output = model.predict(x)
+            loss = criterion(output, y)
+
+            optimizer.zero_grad()
+            loss.backward()
+
+            _apply_mask_to_grads(model, mask)
+            optimizer.step()
+            _restore_masked_params(model, mask, theta0, optimizer)
+
+            running_loss += loss.item()
+            n_batches += 1
+
+        avg_loss = running_loss / max(n_batches, 1)
+        epoch_time = time.time() - epoch_start
+
+        if verbose:
+            print(f"  Epoch {epoch}/{epochs - 1} "
+                  f"({epoch_time:.1f}s) loss={avg_loss:.4f}")
+        if on_epoch_end is not None:
+            on_epoch_end(epoch, avg_loss, epoch_time)
+
+    return model
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 def main():
@@ -223,13 +308,8 @@ def main():
     forget_subset = torch.utils.data.Subset(train_dataset, forget_idx.tolist())
     retain_subset = torch.utils.data.Subset(train_dataset, retain_idx.tolist())
 
-    # --- 6. Training data: random labels on forget + real labels on retain ---
+    # --- 6. Random-label wrapper for the forget set (real labels on retain) ---
     forget_random = RandomLabelDataset(forget_subset, num_labels, seed=args.seed)
-    concat_dataset = torch.utils.data.ConcatDataset([forget_random, retain_subset])
-    train_loader = torch.utils.data.DataLoader(
-        concat_dataset, batch_size=args.batch_size, shuffle=True,
-        num_workers=4, pin_memory=True,
-    )
 
     # --- 7. Eval loaders (with num_labels patched) ---
     forget_eval_subset = torch.utils.data.Subset(train_dataset, forget_idx.tolist())
@@ -269,62 +349,11 @@ def main():
     print(f"  Batch size:     {args.batch_size}")
     print(f"  Device:         {device}")
 
-    # --- 9. Capture theta0 (pre-unlearning weights for masked params) ---
-    with torch.no_grad():
-        theta0 = {
-            name: param.detach().clone()
-            for name, param in algorithm.named_parameters()
-            if name in mask
-        }
-
-    # --- 10. Create SGD optimizer ---
-    optimizer = torch.optim.SGD(
-        algorithm.parameters(),
-        lr=args.unlearn_lr,
-        momentum=0.9,
-        weight_decay=5e-4,
-    )
-
-    criterion = nn.CrossEntropyLoss()
-
-    # --- 11. Unlearning loop ---
+    # --- 9. Per-epoch eval hook (preserves the original CLI output) ---
     all_results = []
 
-    for epoch in range(args.unlearn_epochs):
-        epoch_start = time.time()
-        algorithm.train()
-
-        running_loss = 0.0
-        n_batches = 0
-
-        for batch in train_loader:
-            _, x, y, a = batch
-            x, y = x.to(device), y.to(device, dtype=torch.long)
-
-            output = algorithm.predict(x)
-            loss = criterion(output, y)
-
-            optimizer.zero_grad()
-            loss.backward()
-
-            # Gradient masking: zero gradients on non-salient weights
-            _apply_mask_to_grads(algorithm, mask)
-
-            optimizer.step()
-
-            # Restore non-salient weights to theta0
-            _restore_masked_params(algorithm, mask, theta0, optimizer)
-
-            running_loss += loss.item()
-            n_batches += 1
-
-        avg_loss = running_loss / max(n_batches, 1)
-        epoch_time = time.time() - epoch_start
-
-        # Evaluate
+    def _on_epoch_end(epoch, avg_loss, epoch_time):
         epoch_results = _eval_all(algorithm, eval_loaders, device)
-
-        # Extract summary accuracies
         summary = {
             split: epoch_results[split]['overall']['accuracy']
             for split in epoch_results
@@ -332,7 +361,6 @@ def main():
         epoch_results['epoch'] = epoch
         epoch_results['train_loss'] = avg_loss
         all_results.append(epoch_results)
-
         print(f"  Epoch {epoch}/{args.unlearn_epochs - 1} "
               f"({epoch_time:.1f}s) loss={avg_loss:.4f} | "
               f"forget_acc={summary['forget']:.4f} "
@@ -340,7 +368,17 @@ def main():
               f"val_acc={summary['val']:.4f} "
               f"test_acc={summary['test']:.4f}")
 
-    # --- 12. Save outputs ---
+    # --- 10. Run SalUn unlearning (loop body extracted into run_salun) ---
+    run_salun(
+        algorithm, mask, forget_random, retain_subset,
+        lr=args.unlearn_lr,
+        epochs=args.unlearn_epochs,
+        batch_size=args.batch_size,
+        device=device,
+        on_epoch_end=_on_epoch_end,
+    )
+
+    # --- 11. Save outputs ---
     model_path = os.path.join(args.output_dir, 'unlearned_model.pkl')
     torch.save(algorithm.state_dict(), model_path)
     print(f"\n  Saved unlearned model to: {model_path}")
