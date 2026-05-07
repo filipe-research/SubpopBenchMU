@@ -218,6 +218,14 @@ def main():
     results = full_eval(algorithm, train_dataset, test_dataset,
                         forget_idx, retain_idx, device=device)
 
+    # --- 9b. FBC overlap with bias-aligned ground-truth (Waterbirds-only diagnostic) ---
+    if args.regime == 'fbc' and args.dataset == 'Waterbirds' and args.train_attr == 'yes':
+        gt_forget, _ = bias_aligned_forget(train_dataset, args.forget_ratio, seed=args.seed)
+        overlap_n = len(set(forget_idx.tolist()) & set(gt_forget.tolist()))
+        results['fbc_n_selected'] = int(len(forget_idx))
+        results['fbc_n_overlap_with_bias_aligned'] = int(overlap_n)
+        results['fbc_overlap_ratio'] = float(overlap_n) / len(forget_idx)
+
     # --- 10. Save JSON ---
     out_path = os.path.join(args.output_dir, _output_filename(args))
     with open(out_path, 'w') as f:
