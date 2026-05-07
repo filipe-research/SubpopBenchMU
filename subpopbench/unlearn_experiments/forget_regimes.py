@@ -202,6 +202,62 @@ def fbc_band_forget(dataset, model, ratio, low_pct=0.5, high_pct=0.8,
     return forget_idx, retain_idx
 
 
+def ts_fbc_forget(dataset, model, ratio, pool_multiplier=3.0,
+                  classwise=True, filter_correct=True, device='cuda', seed=0):
+    """Two-Stage FBC: filter top-M% by confidence, then random-sample K from the pool.
+
+    pool_multiplier defines M = K * pool_multiplier. M=1 recovers fbc;
+    M = N/K recovers random.
+    """
+    rng = np.random.default_rng(seed)
+
+    # Stage 1: compute confidence (same logic as fbc_forget)
+    model.eval()
+    loader = DataLoader(dataset, batch_size=256, num_workers=4, shuffle=False)
+    confs, labels, correct = [], [], []
+    with torch.no_grad():
+        for batch in loader:
+            # SubpopBench: batch is (i, x, y, a)
+            x = batch[1].to(device, non_blocking=True)
+            y = batch[2].to(device, non_blocking=True)
+            logits = model.predict(x)
+            probs = F.softmax(logits, dim=1)
+            c, p = probs.max(dim=1)
+            confs.append(c.cpu())
+            labels.append(y.cpu())
+            correct.append((p == y).cpu())
+    confs = torch.cat(confs).numpy()
+    labels = torch.cat(labels).numpy()
+    correct = torch.cat(correct).numpy()
+
+    n_forget = int(len(dataset) * ratio)
+    n_pool = int(n_forget * pool_multiplier)
+    eligible = correct.astype(bool) if filter_correct else np.ones_like(correct, dtype=bool)
+
+    # Stage 2: build candidate pool (top-M by confidence), then sample K
+    if classwise:
+        n_classes = int(labels.max()) + 1
+        per_class_pool = n_pool // n_classes
+        per_class_forget = n_forget // n_classes
+        forget_idx_list = []
+        for c in range(n_classes):
+            mask = eligible & (labels == c)
+            cand = np.where(mask)[0]
+            order = np.argsort(-confs[cand])
+            pool = cand[order[:per_class_pool]]
+            chosen = rng.choice(pool, size=min(per_class_forget, len(pool)), replace=False)
+            forget_idx_list.append(chosen)
+        forget_idx = np.concatenate(forget_idx_list)
+    else:
+        cand = np.where(eligible)[0]
+        order = np.argsort(-confs[cand])
+        pool = cand[order[:n_pool]]
+        forget_idx = rng.choice(pool, size=min(n_forget, len(pool)), replace=False)
+
+    retain_idx = np.setdiff1d(np.arange(len(dataset)), forget_idx)
+    return forget_idx, retain_idx
+
+
 REGIMES = {
     "random": random_forget,
     "group_uniform": group_uniform_forget,
@@ -210,4 +266,5 @@ REGIMES = {
     "class": class_forget,
     "fbc": fbc_forget,
     "fbc_band": fbc_band_forget,
+    "ts_fbc": ts_fbc_forget,
 }

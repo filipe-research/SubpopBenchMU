@@ -39,13 +39,14 @@ from subpopbench.unlearn_experiments.forget_regimes import (
     fbc_forget,
     group_uniform_forget,
     random_forget,
+    ts_fbc_forget,
 )
 from subpopbench.unlearn_experiments.metrics import full_eval
 
 
 REGIME_CHOICES = [
     'random', 'group_uniform', 'bias_aligned', 'bias_conflicting',
-    'class', 'fbc', 'fbc_band',
+    'class', 'fbc', 'fbc_band', 'ts_fbc',
 ]
 
 
@@ -72,6 +73,14 @@ def _build_forget_set(regime, train_dataset, algorithm, args, device):
         return fbc_band_forget(
             train_dataset, model=algorithm, ratio=args.forget_ratio,
             low_pct=args.fbc_band_low, high_pct=args.fbc_band_high,
+            classwise=args.fbc_classwise,
+            filter_correct=args.fbc_filter_correct,
+            device=device, seed=args.seed,
+        )
+    if regime == 'ts_fbc':
+        return ts_fbc_forget(
+            train_dataset, model=algorithm, ratio=args.forget_ratio,
+            pool_multiplier=args.pool_multiplier,
             classwise=args.fbc_classwise,
             filter_correct=args.fbc_filter_correct,
             device=device, seed=args.seed,
@@ -121,6 +130,8 @@ def main():
                         help='Lower confidence quantile for fbc_band (in [0, 1]).')
     parser.add_argument('--fbc_band_high', type=float, default=0.8,
                         help='Upper confidence quantile for fbc_band (in [0, 1]).')
+    parser.add_argument('--pool_multiplier', type=float, default=3.0,
+                        help='ts_fbc: pool size = K * pool_multiplier; M=1 -> fbc, M=N/K -> random.')
     # CMNIST params (only used if dataset == CMNIST)
     parser.add_argument('--cmnist_label_prob', type=float, default=0.5)
     parser.add_argument('--cmnist_attr_prob', type=float, default=0.5)
@@ -252,7 +263,7 @@ def main():
 
     # --- 9c. FBC / FBC-band counts vs full bias-aligned / bias-conflicting pools ---
     # More informative than 9b: independent of any random ground-truth draw.
-    if args.regime in ('fbc', 'fbc_band') and args.train_attr == 'yes':
+    if args.regime in ('fbc', 'fbc_band', 'ts_fbc') and args.train_attr == 'yes':
         from subpopbench.unlearn_experiments.forget_regimes import _collect_groups
         y_all, a_all = _collect_groups(train_dataset)
         ba_pool = set(np.where(y_all == a_all)[0].tolist())
