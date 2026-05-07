@@ -35,6 +35,7 @@ from subpopbench.unlearn_experiments.forget_regimes import (
     bias_aligned_forget,
     bias_conflicting_forget,
     class_forget,
+    fbc_band_forget,
     fbc_forget,
     group_uniform_forget,
     random_forget,
@@ -43,7 +44,8 @@ from subpopbench.unlearn_experiments.metrics import full_eval
 
 
 REGIME_CHOICES = [
-    'random', 'group_uniform', 'bias_aligned', 'bias_conflicting', 'class', 'fbc',
+    'random', 'group_uniform', 'bias_aligned', 'bias_conflicting',
+    'class', 'fbc', 'fbc_band',
 ]
 
 
@@ -62,7 +64,17 @@ def _build_forget_set(regime, train_dataset, algorithm, args, device):
     if regime == 'fbc':
         return fbc_forget(
             train_dataset, model=algorithm, ratio=args.forget_ratio,
-            classwise=True, device=device, seed=args.seed,
+            classwise=args.fbc_classwise,
+            filter_correct=args.fbc_filter_correct,
+            device=device, seed=args.seed,
+        )
+    if regime == 'fbc_band':
+        return fbc_band_forget(
+            train_dataset, model=algorithm, ratio=args.forget_ratio,
+            low_pct=args.fbc_band_low, high_pct=args.fbc_band_high,
+            classwise=args.fbc_classwise,
+            filter_correct=args.fbc_filter_correct,
+            device=device, seed=args.seed,
         )
     raise ValueError(f"Unknown regime: {regime}")
 
@@ -100,6 +112,15 @@ def main():
     parser.add_argument('--unlearn_lr', type=float, default=0.01)
     parser.add_argument('--unlearn_epochs', type=int, default=10)
     parser.add_argument('--batch_size', type=int, default=108)
+    # FBC / FBC-band hparams (used when regime in {fbc, fbc_band})
+    parser.add_argument('--fbc_classwise', action=argparse.BooleanOptionalAction,
+                        default=True, help='Per-class budget split for FBC selection.')
+    parser.add_argument('--fbc_filter_correct', action=argparse.BooleanOptionalAction,
+                        default=True, help='Restrict FBC pool to correctly-classified samples.')
+    parser.add_argument('--fbc_band_low', type=float, default=0.5,
+                        help='Lower confidence quantile for fbc_band (in [0, 1]).')
+    parser.add_argument('--fbc_band_high', type=float, default=0.8,
+                        help='Upper confidence quantile for fbc_band (in [0, 1]).')
     # CMNIST params (only used if dataset == CMNIST)
     parser.add_argument('--cmnist_label_prob', type=float, default=0.5)
     parser.add_argument('--cmnist_attr_prob', type=float, default=0.5)
@@ -218,8 +239,10 @@ def main():
     results = full_eval(algorithm, train_dataset, test_dataset,
                         forget_idx, retain_idx, device=device)
 
-    # --- 9b. FBC overlap with bias-aligned ground-truth (Waterbirds-only diagnostic) ---
-    if args.regime == 'fbc' and args.dataset == 'Waterbirds' and args.train_attr == 'yes':
+    # --- 9b. FBC / FBC-band overlap with bias-aligned ground-truth (Waterbirds-only diagnostic) ---
+    if (args.regime in {'fbc', 'fbc_band'}
+            and args.dataset == 'Waterbirds'
+            and args.train_attr == 'yes'):
         gt_forget, _ = bias_aligned_forget(train_dataset, args.forget_ratio, seed=args.seed)
         overlap_n = len(set(forget_idx.tolist()) & set(gt_forget.tolist()))
         results['fbc_n_selected'] = int(len(forget_idx))

@@ -131,6 +131,77 @@ def fbc_forget(dataset, model, ratio, classwise=True, filter_correct=True,
     return forget_idx, retain_idx
 
 
+def fbc_band_forget(dataset, model, ratio, low_pct=0.5, high_pct=0.8,
+                    classwise=True, filter_correct=True, device='cuda', seed=0):
+    """FBC variant: select samples whose confidence lies in the
+    [low_pct, high_pct] quantile band of the eligible pool.
+
+    Quantiles are computed over the eligible pool (per class when classwise=True,
+    or globally otherwise). If the band yields more than the budget (per_class
+    when classwise, n_forget otherwise), randomly subsample down to the budget.
+    If the band yields fewer, take all of it (no replacement).
+    """
+    if not (0.0 <= low_pct <= high_pct <= 1.0):
+        raise ValueError(
+            f"Require 0 <= low_pct <= high_pct <= 1, got ({low_pct}, {high_pct})"
+        )
+    rng = np.random.default_rng(seed)
+    model.eval()
+    loader = DataLoader(dataset, batch_size=256, num_workers=4, shuffle=False)
+    confs, labels, correct = [], [], []
+    with torch.no_grad():
+        for batch in loader:
+            # SubpopBench: batch is (i, x, y, a)
+            x = batch[1].to(device, non_blocking=True)
+            y = batch[2].to(device, non_blocking=True)
+            logits = model.predict(x)
+            probs = F.softmax(logits, dim=1)
+            c, p = probs.max(dim=1)
+            confs.append(c.cpu())
+            labels.append(y.cpu())
+            correct.append((p == y).cpu())
+    confs = torch.cat(confs).numpy()
+    labels = torch.cat(labels).numpy()
+    correct = torch.cat(correct).numpy()
+
+    n_forget = int(len(dataset) * ratio)
+    eligible = correct.astype(bool) if filter_correct else np.ones_like(correct, dtype=bool)
+
+    if classwise:
+        n_classes = int(labels.max()) + 1
+        per_class = n_forget // n_classes
+        forget_idx_list = []
+        for c in range(n_classes):
+            mask = eligible & (labels == c)
+            cand = np.where(mask)[0]
+            if len(cand) == 0:
+                continue
+            confs_cand = confs[cand]
+            lo, hi = np.quantile(confs_cand, [low_pct, high_pct])
+            in_band = (confs_cand >= lo) & (confs_cand <= hi)
+            band = cand[in_band]
+            if len(band) > per_class:
+                band = rng.choice(band, size=per_class, replace=False)
+            forget_idx_list.append(band)
+        forget_idx = (np.concatenate(forget_idx_list)
+                      if forget_idx_list else np.array([], dtype=int))
+    else:
+        cand = np.where(eligible)[0]
+        if len(cand) == 0:
+            forget_idx = np.array([], dtype=int)
+        else:
+            confs_cand = confs[cand]
+            lo, hi = np.quantile(confs_cand, [low_pct, high_pct])
+            in_band = (confs_cand >= lo) & (confs_cand <= hi)
+            band = cand[in_band]
+            if len(band) > n_forget:
+                band = rng.choice(band, size=n_forget, replace=False)
+            forget_idx = band
+
+    retain_idx = np.setdiff1d(np.arange(len(dataset)), forget_idx)
+    return forget_idx, retain_idx
+
+
 REGIMES = {
     "random": random_forget,
     "group_uniform": group_uniform_forget,
@@ -138,4 +209,5 @@ REGIMES = {
     "bias_conflicting": bias_conflicting_forget,
     "class": class_forget,
     "fbc": fbc_forget,
+    "fbc_band": fbc_band_forget,
 }
