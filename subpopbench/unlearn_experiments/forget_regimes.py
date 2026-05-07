@@ -319,6 +319,48 @@ def awm_fbc_forget(dataset, weak_model, ratio, classwise=True,
     return forget_idx, retain_idx
 
 
+def efbc_forget(dataset, model, ratio, classwise=True, device='cuda', seed=0):
+    """Error-Excluded FBC: random sample from the pool of correctly-classified samples.
+
+    No confidence ranking — equivalent to `random_forget` restricted to samples
+    the model classifies correctly. Acts as an FBC-family ablation that
+    isolates the "exclude errors" effect from the "rank by confidence" effect.
+    """
+    rng = np.random.default_rng(seed)
+    model.eval()
+    loader = DataLoader(dataset, batch_size=256, num_workers=4, shuffle=False)
+    correct, labels = [], []
+    with torch.no_grad():
+        for batch in loader:
+            # SubpopBench: batch is (i, x, y, a)
+            x = batch[1].to(device, non_blocking=True)
+            y = batch[2].to(device, non_blocking=True)
+            logits = model.predict(x)
+            preds = logits.argmax(dim=1)
+            correct.append((preds == y).cpu())
+            labels.append(y.cpu())
+    correct = torch.cat(correct).numpy()
+    labels = torch.cat(labels).numpy()
+
+    n_forget = int(len(dataset) * ratio)
+    eligible = np.where(correct)[0]
+
+    if classwise:
+        n_classes = int(labels.max()) + 1
+        per_class = n_forget // n_classes
+        forget_idx_list = []
+        for c in range(n_classes):
+            class_eligible = eligible[labels[eligible] == c]
+            take = min(per_class, len(class_eligible))
+            forget_idx_list.append(rng.choice(class_eligible, size=take, replace=False))
+        forget_idx = np.concatenate(forget_idx_list)
+    else:
+        forget_idx = rng.choice(eligible, size=min(n_forget, len(eligible)), replace=False)
+
+    retain_idx = np.setdiff1d(np.arange(len(dataset)), forget_idx)
+    return forget_idx, retain_idx
+
+
 REGIMES = {
     "random": random_forget,
     "group_uniform": group_uniform_forget,
@@ -329,4 +371,5 @@ REGIMES = {
     "fbc_band": fbc_band_forget,
     "ts_fbc": ts_fbc_forget,
     "awm_fbc": awm_fbc_forget,
+    "efbc": efbc_forget,
 }

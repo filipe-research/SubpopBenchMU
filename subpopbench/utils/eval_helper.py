@@ -19,7 +19,7 @@ def predict_on_set(algorithm, loader, device):
                 p = torch.sigmoid(p).detach().cpu().numpy()
             else:
                 p = torch.softmax(p, dim=-1).detach().cpu().numpy()
-                if num_dlabels == 2:
+                if num_labels == 2:
                     p = p[:, 1]
 
             ps.append(p)

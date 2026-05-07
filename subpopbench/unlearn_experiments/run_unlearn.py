@@ -37,6 +37,7 @@ from subpopbench.unlearn_experiments.forget_regimes import (
     bias_aligned_forget,
     bias_conflicting_forget,
     class_forget,
+    efbc_forget,
     fbc_band_forget,
     fbc_forget,
     group_uniform_forget,
@@ -48,7 +49,7 @@ from subpopbench.unlearn_experiments.metrics import full_eval
 
 REGIME_CHOICES = [
     'random', 'group_uniform', 'bias_aligned', 'bias_conflicting',
-    'class', 'fbc', 'fbc_band', 'ts_fbc', 'awm_fbc',
+    'class', 'fbc', 'fbc_band', 'ts_fbc', 'awm_fbc', 'efbc',
 ]
 
 
@@ -93,6 +94,12 @@ def _build_forget_set(regime, train_dataset, algorithm, args, device, weak_model
         return awm_fbc_forget(
             train_dataset, weak_model=weak_model, ratio=args.forget_ratio,
             pool_multiplier=args.pool_multiplier,
+            classwise=args.fbc_classwise,
+            device=device, seed=args.seed,
+        )
+    if regime == 'efbc':
+        return efbc_forget(
+            train_dataset, model=algorithm, ratio=args.forget_ratio,
             classwise=args.fbc_classwise,
             device=device, seed=args.seed,
         )
@@ -331,7 +338,7 @@ def main():
 
     # --- 9c. FBC / FBC-band counts vs full bias-aligned / bias-conflicting pools ---
     # More informative than 9b: independent of any random ground-truth draw.
-    if args.regime in ('fbc', 'fbc_band', 'ts_fbc', 'awm_fbc') and args.train_attr == 'yes':
+    if args.regime in ('fbc', 'fbc_band', 'ts_fbc', 'awm_fbc', 'efbc') and args.train_attr == 'yes':
         from subpopbench.unlearn_experiments.forget_regimes import _collect_groups
         y_all, a_all = _collect_groups(train_dataset)
         ba_pool = set(np.where(y_all == a_all)[0].tolist())
